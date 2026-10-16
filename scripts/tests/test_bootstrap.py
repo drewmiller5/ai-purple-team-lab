@@ -285,3 +285,46 @@ def test_bootstrap_env_generates_and_syncs_hashes_when_missing(tmp_path, monkeyp
         assert f"{key}={values[key]}" in written
     assert '"$2y$12$FAKEHASH"' in internal_users_path.read_text(encoding="utf-8")
     assert "OLD" not in internal_users_path.read_text(encoding="utf-8")
+
+
+def test_generate_complex_password_never_contains_dollar():
+    # docker compose interpolates "$" in .env, silently truncating the password.
+    for _ in range(200):
+        assert "$" not in generate_complex_password()
+
+
+def _point_wazuh_paths_at(tmp_path, monkeypatch):
+    certs = tmp_path / "certs"
+    certs.mkdir()
+    authd = tmp_path / "cluster" / "authd.pass"
+    authd.parent.mkdir()
+    monkeypatch.setattr(bootstrap, "CERTS_DIR", certs)
+    monkeypatch.setattr(bootstrap, "AUTHD_PASS_PATH", authd)
+    monkeypatch.setattr(bootstrap, "WAZUH_DIR", tmp_path)
+    return certs, authd
+
+
+def test_ensure_wazuh_files_replaces_docker_placeholder_dirs(tmp_path, monkeypatch):
+    certs, authd = _point_wazuh_paths_at(tmp_path, monkeypatch)
+    authd.mkdir()  # what Docker leaves behind when compose ran first
+    (certs / "wazuh.indexer-key.pem").mkdir()
+    calls = []
+
+    bootstrap.ensure_wazuh_files(run=lambda argv, **k: calls.append(argv))
+
+    assert authd.is_file() and re.fullmatch(r"[0-9a-f]{64}", authd.read_text())
+    assert not (certs / "wazuh.indexer-key.pem").exists()
+    assert calls and "generate-indexer-certs.yml" in calls[0]
+
+
+def test_ensure_wazuh_files_leaves_existing_files_alone(tmp_path, monkeypatch):
+    certs, authd = _point_wazuh_paths_at(tmp_path, monkeypatch)
+    authd.write_text("existing-key")
+    for name in bootstrap.CERT_KEY_FILES:
+        (certs / name).write_text("key")
+    calls = []
+
+    bootstrap.ensure_wazuh_files(run=lambda argv, **k: calls.append(argv))
+
+    assert authd.read_text() == "existing-key"
+    assert calls == []  # no cert regeneration when every key already exists

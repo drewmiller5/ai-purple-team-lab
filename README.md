@@ -33,7 +33,7 @@ Full architecture rationale: `docs/design.md`.
 
     pipenv run python scripts/bootstrap.py
 
-Generates `.env` with random secrets if it doesn't exist yet (including syncing Wazuh's indexer password hashes into its config — a plain env var alone isn't enough for those), brings the full stack up, and prints a copy-paste credentials block for every login surface (target's seeded staff creds, the dashboard, Wazuh). Also saves that block to `QUICKSTART_CREDENTIALS.md` (gitignored). Safe to re-run — never touches an `.env` that already exists.
+Generates `.env` with random secrets if it doesn't exist yet (including syncing Wazuh's indexer password hashes into its config — a plain env var alone isn't enough for those), generates the Wazuh TLS certs and agent-enrollment key if missing (and clears the empty placeholder folders Docker leaves when `compose up` ran first), brings the full stack up, and prints a copy-paste credentials block for every login surface (target's seeded staff creds, the dashboard, Wazuh). Also saves that block to `QUICKSTART_CREDENTIALS.md` (gitignored). Safe to re-run — never touches an `.env` that already exists.
 
 ## Local dev (no Docker)
 

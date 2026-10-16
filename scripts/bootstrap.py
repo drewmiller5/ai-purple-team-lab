@@ -19,9 +19,21 @@ ENV_PATH = PROJECT_ROOT / ".env"
 ENV_EXAMPLE_PATH = PROJECT_ROOT / ".env.example"
 INTERNAL_USERS_PATH = PROJECT_ROOT / "wazuh" / "config" / "wazuh_indexer" / "internal_users.yml"
 QUICKSTART_PATH = PROJECT_ROOT / "QUICKSTART_CREDENTIALS.md"
+WAZUH_DIR = PROJECT_ROOT / "wazuh"
+CERTS_DIR = WAZUH_DIR / "config" / "wazuh_indexer_ssl_certs"
+AUTHD_PASS_PATH = WAZUH_DIR / "config" / "wazuh_cluster" / "authd.pass"
+# Gitignored private keys every fresh clone must generate (wazuh/README.md step 2).
+CERT_KEY_FILES = (
+    "root-ca.key",
+    "admin-key.pem",
+    "wazuh.indexer-key.pem",
+    "wazuh.manager-key.pem",
+    "wazuh.dashboard-key.pem",
+)
 
 WAZUH_INDEXER_IMAGE = "wazuh/wazuh-indexer:4.9.2"
-COMPLEX_PASSWORD_SPECIALS = "@$!%*?&-_"
+# No "$": docker compose interpolates it in .env and silently truncates the password.
+COMPLEX_PASSWORD_SPECIALS = "@!%*?&-_"
 
 # .env keys this script fills when blank. Every one of these already has a
 # "no default, refuses to start without it" comment in .env.example.
@@ -150,30 +162,33 @@ def update_internal_users_hashes(yml_text: str, admin_hash: str, kibanaserver_ha
 
 
 def build_credentials_block(env: dict) -> str:
-    return f"""\
-Purple Team Lab -- Quickstart Credentials
-==========================================
+    return f"""Purple Team Lab -- Logins
+=========================
 
-Target (attack surface, no auth on the public site itself)
-  http://localhost:5000
-  Staff Portal (seeded, deliberately weak -- not generated):
-    http://localhost:5000/admin/login
-    admin / admin123
-    jsmith / Sunshine2024!
+1. Target (the vulnerable app red attacks)
+   URL:       http://localhost:5000
+   Staff URL: http://localhost:5000/admin/login
+   Logins:    admin / admin123   or   jsmith / Sunshine2024!
+              (seeded and deliberately weak -- not generated)
 
-Round Control Dashboard (start/stop rounds, clear flags)
-  http://localhost:8080
-  operator / {env.get("DASHBOARD_AUTH_TOKEN", "<missing>")}
+2. Round Control Dashboard (start/stop rounds, clear flags)
+   URL:      http://localhost:8080
+   Username: operator
+   Password: {env.get("DASHBOARD_AUTH_TOKEN", "<missing>")}
 
-  H55: viewing the dashboard above is not enough to act -- each action
-  form/button also needs its own scoped token pasted into its own field:
-    Red action token:   {env.get("DASHBOARD_RED_ACTION_TOKEN", "<missing>")}
-    Blue action token:  {env.get("DASHBOARD_BLUE_ACTION_TOKEN", "<missing>")}
-    Infra token (start round): {env.get("DASHBOARD_INFRA_ACTION_TOKEN", "<missing>")}
+   Logging in only lets you view. Each action needs its own token,
+   pasted into that action's token field:
+     Start round (Infra): {env.get("DASHBOARD_INFRA_ACTION_TOKEN", "<missing>")}
+     Red action:          {env.get("DASHBOARD_RED_ACTION_TOKEN", "<missing>")}
+     Blue action:         {env.get("DASHBOARD_BLUE_ACTION_TOKEN", "<missing>")}
 
-Wazuh Dashboard (SIEM UI -- browser will warn on the self-signed cert)
-  https://localhost:443
-  admin / {env.get("WAZUH_INDEXER_PASSWORD", "<missing>")}
+3. Wazuh Dashboard (SIEM -- browser warns on the self-signed cert; proceed)
+   URL:      https://localhost
+   Username: admin
+   Password: {env.get("WAZUH_INDEXER_PASSWORD", "<missing>")}
+
+Referee report (after a round):
+   docker exec purple-lab-referee tail -n 5 /app/referee_logs/referee_assessments.jsonl
 """
 
 
@@ -244,8 +259,35 @@ def bootstrap_env(run=subprocess.run) -> dict:
     return values
 
 
+def _clear_docker_placeholder(path: Path) -> None:
+    # If compose runs before a bind-mounted file exists, Docker creates an
+    # empty directory in its place, and every later mount fails or reads
+    # nothing. rmdir only succeeds on an empty dir, so real data is safe.
+    if path.is_dir():
+        path.rmdir()
+
+
+def ensure_wazuh_files(run=subprocess.run) -> None:
+    _clear_docker_placeholder(AUTHD_PASS_PATH)
+    if not AUTHD_PASS_PATH.exists():
+        print(f"Generating agent-enrollment key at {AUTHD_PASS_PATH}...")
+        _write_owner_only(AUTHD_PASS_PATH, generate_hex_secret())
+
+    key_paths = [CERTS_DIR / name for name in CERT_KEY_FILES]
+    for path in key_paths:
+        _clear_docker_placeholder(path)
+    if not all(path.is_file() for path in key_paths):
+        print("Generating Wazuh TLS certificates...")
+        run(
+            ["docker", "compose", "-f", "generate-indexer-certs.yml", "run", "--rm", "generator"],
+            cwd=WAZUH_DIR,
+            check=True,
+        )
+
+
 def main() -> int:
     env = bootstrap_env()
+    ensure_wazuh_files()
 
     print("Bringing the stack up (docker compose up -d)...")
     subprocess.run(["docker", "compose", "up", "-d"], cwd=PROJECT_ROOT, check=True)
